@@ -1,0 +1,189 @@
+
+
+### 异常及中断基本概念
+异常与中断基本等价
+#### 异常向量表
+异常向量表：处理异常的地址集合，存在flash里
+
+   - 注：user system模式是修改CPSR实现切换的，不由异常触发
+
+| 地址 | 异常 | 进入模式 | 描述 |
+| --- | --- | --- | --- |
+| 0x0000001c | FIQ | FIQ | 快速中断请求引脚有效，且CPSR.F==0 产生FIQ异常 |
+| 0x00000018 | IRQ | IRQ | 外部中断请求有效，且CPSR.I==0产生IRQ异常 |
+| 0x00000014 | --- | --- | --- |
+| 0x00000010 | 数据操作 | ABT 中止模式 | 处理器数据访问指令的地址不存在，或不允许当前指令访问，产生数据中止异常 |
+| 0x0000000c | 预存指令 | ABT 中止模式 | 处理器预取指令的地址不存在，或不允许当前指令访问，产生预取中止异常 |
+| 0x00000008 | 软件中断 | SVC 管理模式 | 执行SWI指令产生，用于用户模式下的程序调用特权操作指令 |
+| 0x00000004 | Undefined 指令 | UND 未定义模式 | 遇到不能处理的指令时，产生未定义指令异常 |
+| 0x00000000 | Reset | SVC 管理模式 | 复位电平有效，产生复位异常，程序跳转到复位处理程序处执行  |
+
+```as
+@软中断程序的实现
+	.text
+@异常向量表，未使用也要使用nop保留空间
+b 		reset					@0x00 reset
+nop							@0x04 udef nop不做任何事情
+b		swi_handler				@0x08 swi
+nop							@0x0c prefetch abort
+nop							@0x10 data abort
+nop							@0x14 reserved
+nop							@0x18 IRQ
+nop							@0x1c FIQ
+
+swi_handler:
+	STMFD	sp!,{r0,lr}
+	mov		r0,#6
+  LDMFD	sp!,{r0,pc}
+
+reset:
+	ldr		sp,=stack_base
+	mov 	r0,#3
+  swi 	2						@soft interrupt 跳到0x08地址,并保存下一条指令地址到lr
+  mov		r1,r0
+  b 		reset
+  
+  .data
+buf:								@栈空间
+	.space 32
+stack_base:					@栈地址(入栈时地址递减，故写在空间后面)
+  
+  .end
+```
+
+
+#### 中断异常
+
+- ARM 有两级外部中断 FIQ IRQ
+- 大多数的基于ARM的系统有多个中断源，因此需要一个中断控制器
+- 通常，中断处理程序总是应该包含清除中断源的代码
+
+![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1633090309164-66b39047-0d4f-4ef1-a5ba-8c75f2bfa2c4.png#clientId=u91c1bfc7-9a3a-4&from=paste&height=179&id=u7e37b4a5&name=image.png&originHeight=405&originWidth=1468&originalType=binary&ratio=1&size=252459&status=done&style=none&taskId=uf2ea079b-ffe6-4374-a0a5-9cab1f3933c&width=649)
+
+| ![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1633091559589-25a74fcc-dfdd-438e-9368-33838720cce4.png#clientId=u91c1bfc7-9a3a-4&from=paste&height=199&id=SOnUZ&name=image.png&originHeight=661&originWidth=1119&originalType=binary&ratio=1&size=195364&status=done&style=none&taskId=u90832646-974c-4adb-a66f-97e91efbb23&width=337) | ![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1633091873747-2deb00ab-576b-4cc6-ac45-fc105fd61bea.png#clientId=u91c1bfc7-9a3a-4&from=paste&height=196&id=ue1a2745b&name=image.png&originHeight=620&originWidth=690&originalType=binary&ratio=1&size=237905&status=done&style=none&taskId=udc42ec86-87f0-4803-81f7-c047345ae7c&width=218) |
+| --- | --- |
+
+![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1633190828609-c8b81e52-3f49-470b-84c2-32b76cd6fc20.png#clientId=u27237d71-9910-4&from=paste&height=171&id=u4ab0a8b4&margin=%5Bobject%20Object%5D&name=image.png&originHeight=342&originWidth=1339&originalType=binary&ratio=1&size=253303&status=done&style=none&taskId=ue11f627b-6c68-4dcc-a4c6-32906108398&width=669.5)
+#### 软中断异常
+软中断可以进行系统调用；在进入软中断时，工作模式会自动切换到SVC模式，有更高的权限进行操作；在软中断处理结束，恢复现场时，加上`^`符号可以重新回到user模式。
+**swi指令执行**：
+
+1. 跳转到异常向量表软中断的入口位置
+1. 保存返回地址到LR
+1. 切换到SVC工作模式
+
+**swi + 不同中断号可以实现不同的系统调用操作**
+
+- 软中断号存在软中断指令中，可以去该指令的地址去找，即地址：lr减4
+```
+swi_handler:
+	STMFD	sp!,{r0,lr}
+  sub 	r0,lr,#4				@找到软中断指令地址[lr-4]
+  ldr		r0,[r0]					@取出软中断指令
+  bic		r0,#0xff000000	@获得软中断中断号
+  bl		swi_num_handler	@根据不同的中断号执行不同的操作
+  LDMFD	sp!,{r0,pc}^		@????????????????????????????????放下面14行？
+  
+swi_num_handler：
+	cmp		r0,#2
+  moveq	...
+  cmp		r0,#4
+@ ...
+```
+实际使用时，由于地址可能很大，`b swi`指令不能满足地址要求，故改用`ldr`命令：
+```
+	.text
+@异常向量表
+b 		reset							@0x00 reset
+ldr		pc,_udef					@0x04 udef 
+ldr		pc,_swi_handler		@0x08	swi
+ldr		pc,_prefetch			@0x0c prefetch abort
+ldr		pc,_data_abort		@0x10	data abort
+nop											@0x14 reserved	nop不做任何事情
+ldr		pc,_irq						@0x18 IRQ
+ldr		pc,_fiq						@0x1c FIQ
+
+_swi_handler:
+	.word		swi_handler		@将swi_handler当作一个数赋值给pc
+@.......
+@.......
+
+swi_handler:
+@.......
+```
+#### 异常处理的通用步骤
+| 
+1. 保存当前执行位置
+1. 保存当前执行状态
+1. 寻找中断入口，即向量表地址
+1. 执行中断处理程序
+1. 中断返回
+1. 恢复现场，继续执行
+ | ```
+//异常处理伪代码
+R14_ExceptionMode 	= return link;
+SPSR_ExceptionMode  = CPSR
+CPSR[4:0] 					= ExceptionModeNo.;
+CPSR[5]   = 0         //ARM模式
+if ExcMod == reset/FIQ then
+CPSR[6]   = 1         //禁用FIQ（屏蔽）
+CPSR[7]   = 1         //禁用IRQ（屏蔽）
+PC        = 异常向量地址
+```
+ |
+| --- | --- |
+
+![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1635541629433-e3bbd46a-4933-4464-a2d3-a1b8c4c77661.png#clientId=ud64a7e9b-87fc-4&from=paste&height=345&id=u5aded581&name=image.png&originHeight=587&originWidth=1076&originalType=binary&ratio=1&size=586468&status=done&style=none&taskId=u9bcae896-e43e-4908-8ac5-9d39b25c13a&width=633)
+![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1635541661464-9d4ae6ae-a785-4b3a-b38e-318cde163664.png#clientId=ud64a7e9b-87fc-4&from=paste&height=126&id=ud6a32768&name=image.png&originHeight=215&originWidth=1081&originalType=binary&ratio=1&size=204808&status=done&style=none&taskId=u2af82b2c-1466-441e-8544-bbac0205363&width=634.5)
+
+---
+
+### 中断初始化配置流程
+
+- _GPIO部分_
+1. 设置管脚为中断管脚					GPX1CON
+1. 设置中断触发模式（高低电平/边沿触发）	EXT_INT41CON
+1. 打开GPIO管脚控制						EXT_INT41_MASK
+- _中断控制部分 Interrupt Controller_
+4. ICDISER 使能，决定哪些中断使能
+4. 分发？？？？？？？？？？？？？？？？？？？？？？？？？？？
+4. ICDDCR 分发使能，决定所有中断是否使能
+4. ICCICR ？？？？？？？？？？？？？？？？？？？？？？？
+4. ICCPMR 设置中断优先级门槛
+
+​
+
+### 中断过程
+| 
+1. 中断初始化
+   1. 管脚初始化
+   1. 中断控制器初始化
+2. 中断向量表
+   1. 中断发生后，硬件自动跳转
+   1. 现场保护
+   1. 调用中断处理
+3. 中断处理
+   1. 根据中断号做相应处理
+   1. 清中断
+   1. 现场恢复
+ | ![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1633291106897-fe1edf99-5725-4e25-ab67-2d15a506c8c5.png#clientId=ucb07463f-c70a-4&from=paste&height=296&id=u3525d580&margin=%5Bobject%20Object%5D&name=image.png&originHeight=592&originWidth=1211&originalType=binary&ratio=1&size=320138&status=done&style=none&taskId=u388fb24e-c197-49a6-a0ab-10317f9c97e&width=605.5) |
+| --- | --- |
+
+![image.png](https://cdn.nlark.com/yuque/0/2021/png/12917158/1636284958575-3a78a05e-4cf3-442e-8475-549c35aa8fc6.png#clientId=u9f6c4c40-f45a-4&from=paste&height=448&id=ua976b42b&margin=%5Bobject%20Object%5D&name=image.png&originHeight=895&originWidth=1301&originalType=binary&ratio=1&size=135960&status=done&style=none&taskId=u4274cdb4-2dd0-4e16-b005-c9a0276a0b9&width=650.5)
+
+
+### 正确流程！！
+[https://blog.51cto.com/u_11134889/2069554](https://blog.51cto.com/u_11134889/2069554)
+```c
+//第一种
+	stmfd	sp!, {r0-r12,lr}
+	bl	irq_c_handler
+	ldmfd	sp!, {r0-r12,lr}
+	subs	pc, lr, #4			//subs中s会将spsr赋值给cpsr
+    
+//第二种
+	sub		lr,lr,#4
+	stmfd	sp!, {r0-r12,lr}
+	bl	irq_c_handler
+	ldmfd	sp!, {r0-r12,pc}^	//先修正返回地址，最后ldmfd执行cpsr赋值+pc跳转的任务
+```
